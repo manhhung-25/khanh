@@ -27,12 +27,29 @@ cd khanh
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install ultralytics ncnn
+python -m pip install --no-cache-dir "torch==2.7.1" "torchvision==0.22.1" --index-url https://download.pytorch.org/whl/cpu
+python -m pip install --no-cache-dir ultralytics ncnn
 ```
 
 Nếu đã clone trước đó, vào `~/khanh` và chạy `git pull` thay vì clone lại.
 Các lệnh Python bên dưới chạy trong thư mục `khanh`, sau khi kích hoạt `.venv`.
 Không dùng `sudo pip` hoặc `--break-system-packages`.
+
+Cài PyTorch từ **CPU index** trước để tránh pip tự chọn bản CUDA trên ARM64.
+Bộ 2.7.1/0.22.1 có wheel Python 3.13; không cần hạ Python hệ thống của Pi.
+Đây là bộ phiên bản đề xuất để kiểm tra tương thích, chưa đo trên Pi của bạn.
+
+Nếu gặp `No space left on device`, kiểm tra trước:
+
+```bash
+df -h / /tmp "$HOME"
+python -m pip cache purge
+```
+
+Nếu `/tmp` hết chỗ nhưng thư mục người dùng còn đủ dung lượng, tạo
+`mkdir -p "$HOME/pip-tmp"` và thêm `TMPDIR="$HOME/pip-tmp"` trước mỗi lệnh
+`python -m pip install`. `--no-cache-dir` giảm dung lượng cache nhưng vẫn
+cần chỗ để tải và giải nén thư viện.
 
 ## 2. Xác định camera USB
 
@@ -71,18 +88,45 @@ yolo export model=fire.pt format=ncnn imgsz=640
 Lệnh tạo thư mục `fire_ncnn_model/`. Chờ export hoàn tất; không cần training.
 Lần đầu có thể phải tải thêm công cụ export. Giữ file `fire.pt` để xuất lại.
 
-Nếu gặp `Illegal instruction (core dumped)` khi import/export, có thể là
-wheel thư viện không phù hợp CPU. PyTorch từng ghi nhận lỗi export trên
-Pi 4 với 2.6.0, trong khi 2.5.1 chạy được ở ca lỗi đó. Với **Bookworm,
-Python 3.11, aarch64**, có thể thử bộ phiên bản cũ sau trong `.venv`:
+Nếu gặp `Illegal instruction` khi import/export, chưa có đủ dữ liệu để
+khẳng định thư viện nào bị lỗi. Tuy nhiên, đây thường là mã máy không phù
+hợp CPU. Log `torch-2.14.1+cu130` trên Pi 4 là lý do để thay bộ PyTorch trước.
+PyTorch 2.7 có bản sửa tương thích ARMv8-A/Pi 4; có thể thử CPU 2.7.1 với
+torchvision 0.22.1 trong chính `.venv` hiện tại, kể cả **Python 3.13**:
 
 ```bash
-python -m pip install --force-reinstall "numpy<2" "opencv-python<4.12" "torch==2.5.1" "torchvision==0.20.1" "ultralytics==8.3.70" ncnn
+python -m pip uninstall -y torch torchvision torchaudio
+python -m pip cache purge
+mkdir -p "$HOME/pip-tmp"
+TMPDIR="$HOME/pip-tmp" python -m pip install --no-cache-dir "torch==2.7.1" "torchvision==0.22.1" --index-url https://download.pytorch.org/whl/cpu
+TMPDIR="$HOME/pip-tmp" python -m pip install --no-cache-dir ultralytics ncnn
 ```
 
-Đây là phương án xử lý lỗi tương thích, chưa được đo với phần cứng của bạn.
-Nếu vẫn lỗi, lưu kết quả `python --version`, `uname -m` và `python -m pip freeze`
-để kiểm tra đúng bộ thư viện, không tăng epoch để xử lý lỗi này.
+Kiểm tra phiên bản, convolution CPU và toán tử NMS trước khi export:
+
+```bash
+python - <<'PY'
+import torch
+import torchvision
+print('torch:', torch.__version__, 'torchvision:', torchvision.__version__)
+print('CUDA build:', torch.version.cuda)
+print('Conv:', torch.nn.Conv2d(3, 8, 3)(torch.rand(1, 3, 32, 32)).shape)
+print('NMS:', torchvision.ops.nms(torch.tensor([[0., 0., 10., 10.]]), torch.tensor([0.9]), 0.5))
+PY
+```
+
+Mong đợi torch `2.7.1+cpu`, `CUDA build: None`, và hai phép tính hoàn tất.
+Nếu vẫn `Illegal instruction`, dừng ở bước này và gửi output cùng
+`python --version`, `uname -m`, `python -m pip freeze` để kiểm tra tiếp.
+Đừng cài torch 2.5.1 bằng Python 3.13 ARM64; wheel CPU ARM64 của phiên bản
+đó chỉ có đến Python 3.12. Khi test thành công, chạy lại:
+
+```bash
+yolo export model=fire.pt format=ncnn imgsz=640
+```
+
+Chỉ chạy `camera_pi4.py` sau khi export thành công. `FileNotFoundError` cho
+`fire_ncnn_model` sau lần export bị dừng là hệ quả chưa có model NCNN.
 
 ## 4. Test camera và đo FPS trước
 
@@ -174,6 +218,8 @@ python camera_pi4.py --camera /dev/video0
 - [Ultralytics: Raspberry Pi và NCNN](https://docs.ultralytics.com/guides/raspberry-pi/)
 - [Raspberry Pi: Python và virtual environment](https://www.raspberrypi.com/documentation/computers/os.html#python-on-raspberry-pi)
 - [PyTorch: lỗi export trên Pi 4 ở phiên bản 2.6.0](https://github.com/pytorch/pytorch/issues/146792)
+- [PyTorch: cặp phiên bản 2.7.1/0.22.1 và CPU index](https://pytorch.org/get-started/previous-versions/#v271)
+- [PyTorch 2.7: sửa tương thích ARMv8-A/Pi 4](https://github.com/pytorch/pytorch/releases/tag/v2.7.0)
 
 Script đã kiểm tra cú pháp và luồng chạy với camera/model mô phỏng trên máy
 phát triển. Chưa đo camera, export NCNN, FPS hoặc hiển thị Zalo trên Pi 4 thật;
