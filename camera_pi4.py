@@ -44,6 +44,13 @@ def main(argv=None):
     import cv2
     from ultralytics import YOLO
 
+    # NCNN manages inference threads itself. Avoid extra OpenCV/PyTorch pools
+    # for the small preprocessing/postprocessing tasks on a four-core Pi.
+    cv2.setNumThreads(1)
+    if args.model.is_dir():
+        import torch
+        torch.set_num_threads(1)
+
     # This process shares the verification/sending code, with a longer Pi window.
     alerts.WINDOW_SECONDS = args.window
     alerts.MAX_FRAME_GAP = args.window
@@ -78,10 +85,12 @@ def main(argv=None):
             captured_time = datetime.now().astimezone()
             if frame_count == 0:
                 print(f"Camera thuc te: {frame.shape[1]}x{frame.shape[0]}", flush=True)
+            predict_started = time.monotonic()
             result = model.predict(
                 source=frame, imgsz=args.imgsz, conf=alerts.CONFIDENCE,
                 iou=0.5, device="cpu", max_det=20, verbose=False,
             )[0]
+            predict_seconds = time.monotonic() - predict_started
             detections = [] if result.boxes is None else [
                 (int(class_id), score, (x1, y1, x2, y2))
                 for x1, y1, x2, y2, score, class_id in result.boxes.data.cpu().tolist()
@@ -110,11 +119,17 @@ def main(argv=None):
                 if cv2.getWindowProperty(title, cv2.WND_PROP_VISIBLE) < 1:
                     break
             frame_count += 1
-            durations.append(time.monotonic() - started)
-            fps = len(durations) / max(sum(durations), 1e-9)
+            durations.append((time.monotonic() - started,
+                              captured_at - started, predict_seconds))
+            total_seconds = sum(sample[0] for sample in durations)
+            fps = len(durations) / max(total_seconds, 1e-9)
             now = time.monotonic()
             if now - last_log >= 5:
-                print(f"FPS={fps:.2f} | regions={len(states)} | alarm={confirmed} | "
+                read_ms = 1000 * sum(sample[1] for sample in durations) / len(durations)
+                predict_ms = 1000 * sum(sample[2] for sample in durations) / len(durations)
+                other_ms = max(0.0, 1000 * total_seconds / len(durations) - read_ms - predict_ms)
+                print(f"FPS={fps:.2f} | read_ms={read_ms:.1f} | predict_ms={predict_ms:.1f} | "
+                      f"other_ms={other_ms:.1f} | regions={len(states)} | alarm={confirmed} | "
                       f"{sender.overlay_status() if sender else 'Zalo: OFF'}", flush=True)
                 last_log = now
     except KeyboardInterrupt:

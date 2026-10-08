@@ -8,5 +8,7 @@ __pycache__/
 *.pyc
 .venv/
 *_ncnn_model/
+fire_416.pt
+fire_320.pt
 camera_fire.py
 camera_fire_temporal.py

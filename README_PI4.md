@@ -138,6 +138,11 @@ Lệnh chạy model NCNN mặc định, in FPS và dừng sau 60 khung hình.
 Chế độ `--no-zalo` không đọc cấu hình Zalo, không upload ảnh, không gửi tin nhắn.
 Lần suy luận đầu có thời gian khởi tạo; xem FPS sau khi chương trình đã chạy
 một lúc. FPS bao gồm đọc camera và xử lý model, không chỉ inference.
+Log còn có `read_ms` (đọc camera), `predict_ms` (toàn bộ lời gọi YOLO, gồm
+tiền xử lý/suy luận/hậu xử lý), và `other_ms` (vẽ, xác minh và phần còn lại).
+Các số là trung bình tối đa 20 khung gần nhất; lúc khởi động còn bao gồm tải
+backend. Khi dùng NCNN, script giới hạn luồng phụ của OpenCV/PyTorch ở 1;
+NCNN tự quản lý luồng suy luận.
 
 Muốn test `.pt` trước khi export (chậm hơn):
 
@@ -177,17 +182,31 @@ chỉ dùng ở bản Windows. Khi dừng, chương trình chờ hoàn tất l�
 
 ## 6. Nếu còn chậm
 
-Thử 416 trước khi giảm xuống 320. Cần xuất model lại ở kích thước sẽ chạy;
-lệnh dưới cập nhật thư mục NCNN đã xuất:
+Đo thực tế trên Pi của bạn với YOLO11n NCNN 640: khoảng **2,4 FPS** sau khi
+khởi động. Dòng 0,23 FPS đầu tiên có cả chi phí tải backend. Zalo đang OFF
+trong phép đo này, nên phần upload không gây chậm.
+
+Thử 416 trước khi giảm xuống 320. Mỗi bản được xuất với tên riêng để có thể
+so sánh cùng một cảnh với bản 640 đang chạy được:
 
 ```bash
-yolo export model=fire.pt format=ncnn imgsz=416
-python camera_pi4.py --camera /dev/video0 --imgsz 416 --no-zalo --max-frames 60
+cp fire.pt fire_416.pt
+yolo export model=fire_416.pt format=ncnn imgsz=416
+python camera_pi4.py --model fire_416_ncnn_model --camera /dev/video0 --imgsz 416 --no-zalo --max-frames 60
 ```
 
-Hoặc thay cả hai số 416 bằng 320. Sau khi test, bỏ `--no-zalo --max-frames 60`
-để chạy cảnh báo thật. Giảm kích thước có thể làm bỏ sót lửa nhỏ/xa; so sánh
-với 640 bằng cùng một cảnh trước khi chọn.
+Nếu cần thử 320:
+
+```bash
+cp fire.pt fire_320.pt
+yolo export model=fire_320.pt format=ncnn imgsz=320
+python camera_pi4.py --model fire_320_ncnn_model --camera /dev/video0 --imgsz 320 --no-zalo --max-frames 60
+```
+
+416 và 320 có ít pixel hơn nên có thể xử lý nhanh hơn; FPS cụ thể cần đo lại
+trên Pi. Giảm kích thước có thể làm bỏ sót lửa nhỏ/xa. Đối chiếu các mức bằng
+cùng một cảnh trước khi chọn. Khi chạy cảnh báo thật, bỏ hai tham số
+`--no-zalo --max-frames 60`, giữ đúng `--model` và `--imgsz` đã test.
 
 Nếu FPS thấp đến mức không đủ 5 mẫu, tăng thời gian xác minh (cảnh báo sẽ chậm hơn):
 
