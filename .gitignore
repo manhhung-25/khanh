@@ -1,0 +1,10 @@
+.env
+zalo_config.json
+.vscode/
+data_collect/
+outputs/
+results.csv
+__pycache__/
+*.pyc
+camera_fire.py
+camera_fire_temporal.py
