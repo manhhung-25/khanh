@@ -203,6 +203,52 @@ yolo export model=fire_320.pt format=ncnn imgsz=320
 python camera_pi4.py --model fire_320_ncnn_model --camera /dev/video0 --imgsz 320 --no-zalo --max-frames 60
 ```
 
+### Giảm phần ảnh đệm: thử model hình chữ nhật trước
+
+Log mới của bạn đạt khoảng 4,1–4,3 FPS; `predict_ms` khoảng 223–235 ms,
+`read_ms` chỉ 2–4 ms. Phần chạy model đang chiếm phần lớn thời gian.
+Với camera 640×480, đầu vào vuông 416×416 chứa ảnh đã thu nhỏ thành 416×312
+và phần đệm trên/dưới. Xuất **cao 320, rộng 416** giảm khoảng **23% pixel**
+so với 416×416, giữ cùng tỷ lệ thu nhỏ ảnh camera và không cắt cảnh.
+Đây là giảm lượng tính toán dự kiến, chưa phải mức tăng FPS đã đo trên Pi.
+Kết quả nhận diện vẫn cần đối chiếu vì thay đổi phần đệm có thể thay đổi dự đoán.
+
+```bash
+cp fire.pt fire_rect416.pt
+yolo export model=fire_rect416.pt format=ncnn 'imgsz=[320,416]'
+python camera_pi4.py --model fire_rect416_ncnn_model --camera /dev/video0 --imgsz 320 416 --ncnn-threads 4 --no-zalo --show
+```
+
+`--imgsz` nhận một số (đầu vào vuông) hoặc hai số theo thứ tự **cao rộng**.
+Phải xuất lại model đúng kích thước; dùng model 416×416 cũ rồi đổi `--imgsz`
+không tạo ra model hình chữ nhật. Script kiểm tra kích thước đầu vào trước suy luận.
+Bỏ `--show` khi chạy qua SSH không có Desktop. Bỏ `--no-zalo` khi muốn gửi cảnh báo thật.
+
+Để so sánh số luồng, chạy lần lượt trong cùng một cảnh:
+
+```bash
+python camera_pi4.py --model fire_rect416_ncnn_model --imgsz 320 416 --ncnn-threads 4 --no-zalo --max-frames 100
+python camera_pi4.py --model fire_rect416_ncnn_model --imgsz 320 416 --ncnn-threads 2 --no-zalo --max-frames 100
+```
+
+`--ncnn-threads 0` (mặc định) giữ lựa chọn của NCNN. NCNN thường đã dùng các
+lõi CPU, nên chọn 4 không có nghĩa sẽ tăng bốn lần FPS. Chọn số luồng có
+`infer_ms` thấp hơn sau khởi động; giữ cùng chế độ hiển thị khi so sánh.
+Log mới tách `pre_ms`, `infer_ms`, `post_ms` do Ultralytics đo. `predict_ms`
+vẫn gồm toàn bộ lời gọi YOLO và phần quản lý ngoài ba giai đoạn này.
+
+Nếu cần ưu tiên tốc độ hơn nữa, xuất cao 256, rộng 320:
+
+```bash
+cp fire.pt fire_rect320.pt
+yolo export model=fire_rect320.pt format=ncnn 'imgsz=[256,320]'
+python camera_pi4.py --model fire_rect320_ncnn_model --imgsz 256 320 --ncnn-threads 4 --no-zalo --show
+```
+
+Bản này thu nhỏ cả ảnh camera nhiều hơn; cần test lại ngọn lửa nhỏ/xa và
+khói mỏng trước khi dùng để gửi cảnh báo. Chỉ tăng FPS xem trước hoặc lặp
+lại kết quả cũ không làm tăng số lần model thực sự phân tích ảnh.
+
 416 và 320 có ít pixel hơn nên có thể xử lý nhanh hơn; FPS cụ thể cần đo lại
 trên Pi. Giảm kích thước có thể làm bỏ sót lửa nhỏ/xa. Đối chiếu các mức bằng
 cùng một cảnh trước khi chọn. Khi chạy cảnh báo thật, bỏ hai tham số
@@ -235,6 +281,8 @@ python camera_pi4.py --camera /dev/video0
 ## Nguồn và phạm vi kiểm tra
 
 - [Ultralytics: Raspberry Pi và NCNN](https://docs.ultralytics.com/guides/raspberry-pi/)
+- [Ultralytics: kích thước đầu vào khi export](https://docs.ultralytics.com/modes/export/)
+- [NCNN: số luồng và OpenMP](https://github.com/Tencent/ncnn/wiki/openmp-best-practice)
 - [Raspberry Pi: Python và virtual environment](https://www.raspberrypi.com/documentation/computers/os.html#python-on-raspberry-pi)
 - [PyTorch: lỗi export trên Pi 4 ở phiên bản 2.6.0](https://github.com/pytorch/pytorch/issues/146792)
 - [PyTorch: cặp phiên bản 2.7.1/0.22.1 và CPU index](https://pytorch.org/get-started/previous-versions/#v271)

@@ -2,6 +2,7 @@
 
 import argparse
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 import signal
@@ -17,7 +18,10 @@ def parse_args(argv=None):
                         default=alerts.PROJECT_DIR / "fire_ncnn_model")
     parser.add_argument("--camera", default="/dev/video0",
                         help="USB camera device path, or a numeric index")
-    parser.add_argument("--imgsz", type=int, choices=(320, 416, 640), default=640)
+    parser.add_argument("--imgsz", type=int, nargs="+", default=[640],
+                        help="Square size, or HEIGHT WIDTH, matching the NCNN export (e.g. 320 416)")
+    parser.add_argument("--ncnn-threads", type=int, choices=(0, 1, 2, 3, 4), default=0,
+                        help="NCNN inference threads; 0 keeps the runtime default")
     parser.add_argument("--window", type=float, default=5.0,
                         help="Confirmation window in seconds (default: 5 for a slower CPU)")
     parser.add_argument("--show", action="store_true", help="Show an OpenCV preview on a desktop")
@@ -25,6 +29,12 @@ def parse_args(argv=None):
     parser.add_argument("--max-frames", type=int, default=0,
                         help="Stop after N frames; 0 runs until Ctrl+C")
     args = parser.parse_args(argv)
+    if len(args.imgsz) not in (1, 2) or any(size < 32 or size > 640 or size % 32 for size in args.imgsz):
+        parser.error("--imgsz needs one or two multiples of 32, between 32 and 640")
+    if len(args.imgsz) == 1:
+        args.imgsz *= 2
+    if args.ncnn_threads and not args.model.is_dir():
+        parser.error("--ncnn-threads requires an exported NCNN model directory")
     if args.window <= 0 or args.max_frames < 0:
         parser.error("--window must be positive; --max-frames must be nonnegative")
     return args
@@ -32,6 +42,57 @@ def parse_args(argv=None):
 
 def stop_requested(signum, frame):
     raise KeyboardInterrupt
+
+
+@contextmanager
+def ncnn_thread_options(threads):
+    """Set options on newly created nets before Ultralytics loads their weights."""
+    if not threads:
+        yield
+        return
+    import ncnn
+
+    original_net = ncnn.Net
+
+    def create_net(*args, **kwargs):
+        net = original_net(*args, **kwargs)
+        net.opt.num_threads = threads
+        return net
+
+    # YOLO loads its backend lazily on the first predict call in this single
+    # inference thread. Restore the constructor even if loading fails.
+    ncnn.Net = create_net
+    try:
+        yield
+    finally:
+        ncnn.Net = original_net
+
+
+def configure_ncnn(model, args):
+    """Check and report the actual backend settings once before inference."""
+    configured = False
+
+    def on_predict_start(predictor):
+        nonlocal configured
+        if configured:
+            return
+        actual_size = list(predictor.imgsz)
+        if actual_size != args.imgsz:
+            raise ValueError(
+                f"NCNN input {actual_size} khac --imgsz {args.imgsz}. "
+                "Can export model moi voi dung chieu cao/chieu rong; chi doi --imgsz khong du."
+            )
+        # AutoBackend exposes net in both the older and newer Ultralytics layouts.
+        net = getattr(predictor.model, "net", None)
+        if net is None:
+            raise RuntimeError("Khong tim thay NCNN net trong backend Ultralytics.")
+        if args.ncnn_threads and net.opt.num_threads != args.ncnn_threads:
+            raise RuntimeError("NCNN khong ap dung so luong truoc khi tai model.")
+        print(f"NCNN: input={actual_size[0]}x{actual_size[1]}; "
+              f"threads={net.opt.num_threads}", flush=True)
+        configured = True
+
+    model.add_callback("on_predict_start", on_predict_start)
 
 
 def main(argv=None):
@@ -55,6 +116,8 @@ def main(argv=None):
     alerts.WINDOW_SECONDS = args.window
     alerts.MAX_FRAME_GAP = args.window
     model = YOLO(str(args.model), task="detect")
+    if args.model.is_dir():
+        configure_ncnn(model, args)
     sender = None if args.no_zalo else alerts.ZaloAlertSender(alerts.load_zalo_config())
     source = int(args.camera) if args.camera.isdecimal() else args.camera
     camera = cv2.VideoCapture(source, cv2.CAP_V4L2)
@@ -86,10 +149,11 @@ def main(argv=None):
             if frame_count == 0:
                 print(f"Camera thuc te: {frame.shape[1]}x{frame.shape[0]}", flush=True)
             predict_started = time.monotonic()
-            result = model.predict(
-                source=frame, imgsz=args.imgsz, conf=alerts.CONFIDENCE,
-                iou=0.5, device="cpu", max_det=20, verbose=False,
-            )[0]
+            with ncnn_thread_options(args.ncnn_threads if frame_count == 0 else 0):
+                result = model.predict(
+                    source=frame, imgsz=args.imgsz, conf=alerts.CONFIDENCE,
+                    iou=0.5, device="cpu", max_det=20, verbose=False, rect=False,
+                )[0]
             predict_seconds = time.monotonic() - predict_started
             detections = [] if result.boxes is None else [
                 (int(class_id), score, (x1, y1, x2, y2))
@@ -120,7 +184,10 @@ def main(argv=None):
                     break
             frame_count += 1
             durations.append((time.monotonic() - started,
-                              captured_at - started, predict_seconds))
+                              captured_at - started, predict_seconds,
+                              result.speed.get("preprocess", 0.0),
+                              result.speed.get("inference", 0.0),
+                              result.speed.get("postprocess", 0.0)))
             total_seconds = sum(sample[0] for sample in durations)
             fps = len(durations) / max(total_seconds, 1e-9)
             now = time.monotonic()
@@ -128,7 +195,12 @@ def main(argv=None):
                 read_ms = 1000 * sum(sample[1] for sample in durations) / len(durations)
                 predict_ms = 1000 * sum(sample[2] for sample in durations) / len(durations)
                 other_ms = max(0.0, 1000 * total_seconds / len(durations) - read_ms - predict_ms)
+                pre_ms, infer_ms, post_ms = (
+                    sum(sample[index] for sample in durations) / len(durations)
+                    for index in (3, 4, 5)
+                )
                 print(f"FPS={fps:.2f} | read_ms={read_ms:.1f} | predict_ms={predict_ms:.1f} | "
+                      f"pre_ms={pre_ms:.1f} | infer_ms={infer_ms:.1f} | post_ms={post_ms:.1f} | "
                       f"other_ms={other_ms:.1f} | regions={len(states)} | alarm={confirmed} | "
                       f"{sender.overlay_status() if sender else 'Zalo: OFF'}", flush=True)
                 last_log = now

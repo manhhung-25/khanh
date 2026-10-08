@@ -10,5 +10,7 @@ __pycache__/
 *_ncnn_model/
 fire_416.pt
 fire_320.pt
+fire_rect416.pt
+fire_rect320.pt
 camera_fire.py
 camera_fire_temporal.py
