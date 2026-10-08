@@ -6,5 +6,7 @@ outputs/
 results.csv
 __pycache__/
 *.pyc
+.venv/
+*_ncnn_model/
 camera_fire.py
 camera_fire_temporal.py

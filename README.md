@@ -52,6 +52,9 @@ Edge devices: Deploy the model on devices with limited resources for real-time d
 
 ## Lửa nhỏ hoặc ở xa (webcam và video Zalo)
 
+**Raspberry Pi 4 + camera USB:** xem [hướng dẫn cài đặt và chạy](README_PI4.md).
+Script trên Pi là `camera_pi4.py` (Linux/V4L2, hỗ trợ chạy qua SSH).
+
 Trước khi chạy, sao chép `zalo_config.example.json` thành `zalo_config.json`
 và điền `bot_token`, `chat_id`, `imgbb_api_key` trên máy của bạn. File cấu hình
 thật được bỏ qua bởi Git; không đưa token hoặc API key lên GitHub.
